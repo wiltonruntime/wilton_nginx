@@ -34,40 +34,29 @@ typedef void*(*wilton_free_fun)(char*);
 typedef void*(*wilton_dyload_fun)(const char*, int, const char*, int);
 typedef char*(*wilton_embed_init_fun)(const char*, int, const char*, int, const char*, int);
 
-static char *conf_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static char *conf_wilton_home(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r);
-
 // globals
 static wiltoncall_fun wiltoncall = NULL;
 static wilton_free_fun wilton_free = NULL;
-static const char* gateway_module = NULL;
-static const char* whome = NULL;
-static const char* engine = NULL;
-static const char* appdir = NULL;
+static ngx_str_t wilton_home;
+static ngx_str_t wilton_engine;
+static ngx_str_t wilton_appdir;
+static ngx_str_t wilton_module;
 
 ngx_int_t initialize(ngx_cycle_t* cycle) {
-
-    // todo: get this from config
-    whome = "/home/alex/projects/wilton/build/wilton_dist";
-    //const char* whome = "C:/Program Files/WiltonRuntime/wilton_v202101210";
-    engine = "quickjs";
-    appdir = "/home/alex/projects/wilton_other/wngx";
-    gateway_module = "wngx/hi";
 
     char str[1024];
 
     // load shared libs
 #ifndef _WIN32
-    snprintf(str, sizeof(str), "%s%s", whome, "/bin/libwilton_core.so");
+    snprintf(str, sizeof(str), "%s%s", wilton_home.data, "/bin/libwilton_core.so");
     void* core_lib = dlopen(str, RTLD_LAZY);
-    snprintf(str, sizeof(str), "%s%s", whome, "/bin/libwilton_embed.so");
+    snprintf(str, sizeof(str), "%s%s", wilton_home.data, "/bin/libwilton_embed.so");
     void* embed_lib = dlopen(str, RTLD_LAZY);
 #else // !_WIN32
     // todo: LoadLibraryW
-    snprintf(str, sizeof(str), "%s%s", whome, "/bin/wilton_core.dll");
+    snprintf(str, sizeof(str), "%s%s", wilton_home.data, "/bin/wilton_core.dll");
     HANDLE core_lib = LoadLibraryA(str);
-    snprintf(str, sizeof(str), "%s%s", whome, "/bin/wilton_embed.dll");
+    snprintf(str, sizeof(str), "%s%s", wilton_home.data, "/bin/wilton_embed.dll");
     HANDLE embed_lib = LoadLibraryA(str);
 #endif // _WIN32
     if (NULL == core_lib) {
@@ -102,8 +91,8 @@ ngx_int_t initialize(ngx_cycle_t* cycle) {
     }
 
     // call init
-    char* err_init = embed_init(whome, (int)(strlen(whome)),
-            engine, (int)(strlen(engine)), appdir, (int)(strlen(appdir)));
+    char* err_init = embed_init((const char*) wilton_home.data, wilton_home.len,
+            (const char*) wilton_engine.data, wilton_engine.len, (const char*) wilton_appdir.data, wilton_appdir.len);
     if (NULL != err_init) {
         fprintf(stderr, "init: 'wilton_embed_init' failed, message: [%s]\n", err_init);
         wilton_free(err_init);
@@ -112,7 +101,7 @@ ngx_int_t initialize(ngx_cycle_t* cycle) {
 
     // todo: better libs loading
     // dyload required libs
-    snprintf(str, sizeof(str), "%s%s", whome, "/bin/");
+    snprintf(str, sizeof(str), "%s%s", wilton_home.data, "/bin/");
     wilton_dyload("wilton_mustache", (int) sizeof("wilton_mustache") - 1, str, (int) strlen(str));
     wilton_dyload("wilton_channel", (int) sizeof("wilton_channel") - 1, str, (int) strlen(str));
     wilton_dyload("wilton_thread", (int) sizeof("wilton_thread") - 1, str, (int) strlen(str));
@@ -123,62 +112,12 @@ ngx_int_t initialize(ngx_cycle_t* cycle) {
     return NGX_OK;
 }
 
-static ngx_command_t ngx_http_wilton_commands[] = {
-
-    { ngx_string("wilton"), /* directive */
-      NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS, /* location context and takes
-                                            no arguments*/
-      conf_wilton, /* configuration setup function */
-      NGX_HTTP_LOC_CONF_OFFSET, /* No offset. Only one context is supported. */
-      0, /* No offset when storing the module configuration on struct. */
-      NULL},
-
-    { ngx_string("wilton_home"),
-      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
-      conf_wilton_home,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      0,
-      NULL},
-
-    ngx_null_command /* command termination */
-};
-
-static ngx_http_module_t ngx_http_wilton_module_ctx = {
-    NULL, /* preconfiguration */
-    NULL, /* postconfiguration */
-
-    NULL, /* create main configuration */
-    NULL, /* init main configuration */
-
-    NULL, /* create server configuration */
-    NULL, /* merge server configuration */
-
-    NULL, /* create location configuration */
-    NULL /* merge location configuration */
-};
-
-ngx_module_t ngx_http_wilton_module = {
-    NGX_MODULE_V1,
-    &ngx_http_wilton_module_ctx, /* module context */
-    ngx_http_wilton_commands, /* module directives */
-    NGX_HTTP_MODULE, /* module type */
-    NULL, /* init master */
-    NULL, /* init module */
-    initialize, /* init process */
-    NULL, /* init thread */
-    NULL, /* exit thread */
-    NULL, /* exit process */
-    NULL, /* exit master */
-    NGX_MODULE_V1_PADDING
-};
-
-static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r)
-{
+static ngx_int_t request_handler(ngx_http_request_t *r) {
     const char* call_runscript = "runscript_quickjs";
     char call_desc_json[1024];
     memset(call_desc_json, ' ', sizeof(call_desc_json));
     snprintf(call_desc_json, sizeof(call_desc_json),
-            "{\"module\": \"%s\", \"args\": [%lld]}", gateway_module, (long long) r);
+            "{\"module\": \"%s\", \"args\": [%lld]}", wilton_module.data, (long long) r);
 
     char* json_out = NULL;
     int json_len_out = -1;
@@ -202,20 +141,103 @@ static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r)
 
 }
 
-static char *conf_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    ngx_http_core_loc_conf_t *clcf; /* pointer to core location configuration */
-
+static char* conf_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     /* Install the handler. */
-    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
-    clcf->handler = ngx_http_wilton_handler;
-
+    ngx_http_core_loc_conf_t* clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    clcf->handler = request_handler;
     return NGX_CONF_OK;
 }
 
-static char *conf_wilton_home(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    ngx_http_core_loc_conf_t *clcf; /* pointer to core location configuration */
-    
-    //fprintf(stderr, "%s\n", cf->args->elts);
-    
+static char* conf_wilton_home(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_str_t* value = cf->args->elts;
+    wilton_home = *(value + 1);
     return NGX_CONF_OK;
 }
+
+static char* conf_wilton_engine(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_str_t* value = cf->args->elts;
+    wilton_engine = *(value + 1);
+    return NGX_CONF_OK;
+}
+
+static char* conf_wilton_appdir(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_str_t* value = cf->args->elts;
+    wilton_appdir = *(value + 1);
+    return NGX_CONF_OK;
+}
+
+static char* conf_wilton_module(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_str_t* value = cf->args->elts;
+    wilton_module = *(value + 1);
+    return NGX_CONF_OK;
+}
+
+static ngx_command_t conf_desc[] = {
+
+    { ngx_string("wilton_gateway"), /* directive */
+      NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS, /* location context and takes
+                                            no arguments*/
+      conf_wilton, /* configuration setup function */
+      NGX_HTTP_LOC_CONF_OFFSET, /* No offset. Only one context is supported. */
+      0, /* No offset when storing the module configuration on struct. */
+      NULL},
+
+    { ngx_string("wilton_home"),
+      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+      conf_wilton_home,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL},
+
+    { ngx_string("wilton_engine"),
+      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+      conf_wilton_engine,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL},
+
+    { ngx_string("wilton_appdir"),
+      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+      conf_wilton_appdir,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL},
+
+    { ngx_string("wilton_module"),
+      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+      conf_wilton_module,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL},
+
+    ngx_null_command /* command termination */
+};
+
+static ngx_http_module_t module_ctx = {
+    NULL, /* preconfiguration */
+    NULL, /* postconfiguration */
+
+    NULL, /* create main configuration */
+    NULL, /* init main configuration */
+
+    NULL, /* create server configuration */
+    NULL, /* merge server configuration */
+
+    NULL, /* create location configuration */
+    NULL /* merge location configuration */
+};
+
+ngx_module_t ngx_http_wilton_gateway_module = {
+    NGX_MODULE_V1,
+    &module_ctx, /* module context */
+    conf_desc, /* module directives */
+    NGX_HTTP_MODULE, /* module type */
+    NULL, /* init master */
+    NULL, /* init module */
+    initialize, /* init process */
+    NULL, /* init thread */
+    NULL, /* exit thread */
+    NULL, /* exit process */
+    NULL, /* exit master */
+    NGX_MODULE_V1_PADDING
+};
