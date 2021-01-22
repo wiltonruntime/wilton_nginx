@@ -136,6 +136,9 @@ static ngx_int_t request_handler(ngx_http_request_t *r) {
         wilton_free(json_out);
     }
 
+    // todo: body
+    ngx_http_discard_request_body(r);
+
     r->main->count++;
     return NGX_DONE;
 
