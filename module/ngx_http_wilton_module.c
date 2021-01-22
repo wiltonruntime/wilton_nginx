@@ -16,18 +16,19 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
-#include <ngx_channel.h>
 #include <ngx_http.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else // !WIN32
+#ifndef _WIN32
 #include <dlfcn.h>
 #include <unistd.h>
-#endif // _WIN32
+#include <ngx_channel.h>
+#else // _WIN32
+#include <windows.h>
+#define dlsym GetProcAddress
+#endif // !_WIN32
 
 typedef char*(*wiltoncall_fun)(const char*, int, const char*, int, char**, int*);
 typedef void*(*wilton_free_fun)(char*);
@@ -35,15 +36,8 @@ typedef char*(*wilton_embed_init_fun)(const char*, int, const char*, int, const 
 
 static char *ngx_http_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r);
-static void pipe_event_handler(ngx_event_t* ev);
-
-typedef struct fds_pair {
-    int fds_in;
-    int fds_out;
-} fds_pair;
 
 // globals
-static fds_pair wilton_pipe;
 static wiltoncall_fun wiltoncall = NULL;
 static wilton_free_fun wilton_free = NULL;
 static const char* gateway_module = NULL;
@@ -51,26 +45,37 @@ static const char* gateway_module = NULL;
 static u_char ngx_wilton[] = "hello world\r\n";
 static u_char resp[1024];
 
+#ifndef _WIN32
+#include "response_pipe.c"
+#endif // !_WIN32
+
 ngx_int_t initialize(ngx_cycle_t* cycle) {
 
-    // init wilton
-
     // todo: get this from config
-    const char* whome = "/home/alex/projects/wilton/build/wilton_dist";
+    //const char* whome = "/home/alex/projects/wilton/build/wilton_dist";
+    const char* whome = "C:/Program Files/WiltonRuntime/wilton_v202101210";
     const char* engine = "quickjs";
-    const char* app_dir = "/home/alex/projects/wilton_other/wngx";
+    const char* app_dir = "C:/tmp/wngx";
     gateway_module = "wngx/hi";
     char str[1024];
 
     // load shared libs
+#ifndef _WIN32
     snprintf(str, sizeof(str), "%s%s", whome, "/bin/libwilton_core.so");
-    void* core_lib = dlopen(str , RTLD_LAZY);
+    void* core_lib = dlopen(str, RTLD_LAZY);
+    snprintf(str, sizeof(str), "%s%s", whome, "/bin/libwilton_embed.so");
+    void* embed_lib = dlopen(str, RTLD_LAZY);
+#else // !_WIN32
+    // todo: LoadLibraryW
+    snprintf(str, sizeof(str), "%s%s", whome, "/bin/wilton_core.dll");
+    HANDLE core_lib = LoadLibraryA(str);
+    snprintf(str, sizeof(str), "%s%s", whome, "/bin/wilton_embed.dll");
+    HANDLE embed_lib = LoadLibraryA(str);
+#endif // _WIN32
     if (NULL == core_lib) {
         fprintf(stderr, "init: 'wilton_core' dlopen failed\n");
         return NGX_ERROR;
     }
-    snprintf(str, sizeof(str), "%s%s", whome, "/bin/libwilton_embed.so");
-    void* embed_lib = dlopen(str, RTLD_LAZY);
     if (NULL == embed_lib) {
         fprintf(stderr, "init: 'wilton_embed' dlopen failed\n");
         return NGX_ERROR;
@@ -102,46 +107,15 @@ ngx_int_t initialize(ngx_cycle_t* cycle) {
         return NGX_ERROR;
     }
 
-    // init pipe
+    fprintf(stderr, "gateway: initialization complete \n");
 
-    // create pipe
-    int fds[2];
-    int err = pipe(fds);
-    if (0 != err) {
-        fprintf(stderr, "init: 'pipe' failed\n");
-        return NGX_ERROR;
-    }
-
-    // make descriptors non-blocking
-    int err_fds1_nb = ngx_nonblocking(fds[0]);
-    if (-1 == err_fds1_nb) {
-        fprintf(stderr, "init: 'ngx_nonblocking' for fds1 failed, code: [%d]\n", err_fds1_nb);
-        return NGX_ERROR;
-    }
-    int err_fds2_nb = ngx_nonblocking(fds[1]);
-    if (-1 == err_fds2_nb) {
-        fprintf(stderr, "init: 'ngx_nonblocking' for fds1 failed, code [%d]\n", err_fds2_nb);
-        return NGX_ERROR;
-    }
-
-    // register listener on a pipe
-    ngx_int_t rc = ngx_add_channel_event(cycle, fds[0], NGX_READ_EVENT, pipe_event_handler);
-    if (NGX_OK != rc) {
-        fprintf(stderr, "init: 'ngx_add_channel_event' failed, code: [%ld]\n", rc);
-        return NGX_ERROR;
-    }
-
-    // expose pipe on global var
-    wilton_pipe.fds_in = fds[0];
-    wilton_pipe.fds_in = fds[1];
-
+#ifndef _WIN32
+    return create_pipe(cycle);
+#else // _WIN32
     return NGX_OK;
+#endif // !_WIN32
 }
 
-/**
- * This module provided directive: hello world.
- *
- */
 static ngx_command_t ngx_http_wilton_commands[] = {
 
     { ngx_string("wilton"), /* directive */
@@ -155,7 +129,6 @@ static ngx_command_t ngx_http_wilton_commands[] = {
     ngx_null_command /* command termination */
 };
 
-/* The module context. */
 static ngx_http_module_t ngx_http_wilton_module_ctx = {
     NULL, /* preconfiguration */
     NULL, /* postconfiguration */
@@ -170,50 +143,6 @@ static ngx_http_module_t ngx_http_wilton_module_ctx = {
     NULL /* merge location configuration */
 };
 
-void pipe_event_handler(ngx_event_t* ev) {
-    ngx_connection_t* c = (ngx_connection_t*) ev->data;
-    ngx_int_t result = ngx_handle_read_event(ev, 0);
-    if (result != NGX_OK) {
-        fprintf(stderr, "pipe: ngx_handle_read_event error: %ld\n", result);
-    }
-
-    ngx_http_request_t* r;
-    ngx_int_t size = read(c->fd, &r, sizeof(r));
-    if (size == -1) {
-        fprintf(stderr, "pipe: read error\n");
-    }
-
-    ngx_buf_t *b;
-    ngx_chain_t out;
-
-    /* Set the Content-Type header. */
-    r->headers_out.content_type.len = sizeof("text/plain") - 1;
-    r->headers_out.content_type.data = (u_char *) "text/plain";
-
-    /* Allocate a new buffer for sending out the reply. */
-    b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
-
-    /* Insertion in the buffer chain. */
-    out.buf = b;
-    out.next = NULL; /* just one buffer */
-    
-    b->pos = ngx_wilton; /* first position in memory of the data */
-    b->last = ngx_wilton + sizeof(ngx_wilton) - 1; /* last position in memory of the data */
-    b->memory = 1; /* content is in read-only memory */
-    b->last_buf = 1; /* there will be no more buffers in the request */
-
-    /* Sending the headers for the reply. */
-    r->headers_out.status = NGX_HTTP_OK; /* 200 status code */
-    /* Get the content length of the body. */
-    r->headers_out.content_length_n = sizeof(ngx_wilton) - 1;
-    ngx_http_send_header(r); /* Send the headers */
-
-    /* Send the body, and return the status code of the output filter chain. */
-    ngx_http_output_filter(r, &out);
-    ngx_http_finalize_request(r, NGX_HTTP_OK);
-}
-
-/* Module definition. */
 ngx_module_t ngx_http_wilton_module = {
     NGX_MODULE_V1,
     &ngx_http_wilton_module_ctx, /* module context */
@@ -229,14 +158,6 @@ ngx_module_t ngx_http_wilton_module = {
     NGX_MODULE_V1_PADDING
 };
 
-/**
- * Content handler.
- *
- * @param r
- *   Pointer to the request structure. See http_request.h.
- * @return
- *   The status of the response generation.
- */
 static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r)
 {
     const char* call_runscript = "runscript_quickjs";
@@ -286,20 +207,7 @@ static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r)
     return ngx_http_output_filter(r, &out);
 } /* ngx_http_wilton_handler */
 
-/**
- * Configuration setup function that installs the content handler.
- *
- * @param cf
- *   Module configuration structure pointer.
- * @param cmd
- *   Module directives structure pointer.
- * @param conf
- *   Module configuration structure pointer.
- * @return string
- *   Status of the configuration setup.
- */
-static char *ngx_http_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
+static char *ngx_http_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_core_loc_conf_t *clcf; /* pointer to core location configuration */
 
     /* Install the hello world handler. */
