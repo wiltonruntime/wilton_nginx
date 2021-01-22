@@ -24,7 +24,6 @@
 #ifndef _WIN32
 #include <dlfcn.h>
 #include <unistd.h>
-#include <ngx_channel.h>
 #else // _WIN32
 #include <windows.h>
 #define dlsym GetProcAddress
@@ -32,31 +31,30 @@
 
 typedef char*(*wiltoncall_fun)(const char*, int, const char*, int, char**, int*);
 typedef void*(*wilton_free_fun)(char*);
+typedef void*(*wilton_dyload_fun)(const char*, int, const char*, int);
 typedef char*(*wilton_embed_init_fun)(const char*, int, const char*, int, const char*, int);
 
-static char *ngx_http_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *conf_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *conf_wilton_home(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r);
 
 // globals
 static wiltoncall_fun wiltoncall = NULL;
 static wilton_free_fun wilton_free = NULL;
 static const char* gateway_module = NULL;
-
-static u_char ngx_wilton[] = "hello world\r\n";
-static u_char resp[1024];
-
-#ifndef _WIN32
-#include "response_pipe.c"
-#endif // !_WIN32
+static const char* whome = NULL;
+static const char* engine = NULL;
+static const char* appdir = NULL;
 
 ngx_int_t initialize(ngx_cycle_t* cycle) {
 
     // todo: get this from config
-    //const char* whome = "/home/alex/projects/wilton/build/wilton_dist";
-    const char* whome = "C:/Program Files/WiltonRuntime/wilton_v202101210";
-    const char* engine = "quickjs";
-    const char* app_dir = "C:/tmp/wngx";
+    whome = "/home/alex/projects/wilton/build/wilton_dist";
+    //const char* whome = "C:/Program Files/WiltonRuntime/wilton_v202101210";
+    engine = "quickjs";
+    appdir = "/home/alex/projects/wilton_other/wngx";
     gateway_module = "wngx/hi";
+
     char str[1024];
 
     // load shared libs
@@ -92,6 +90,11 @@ ngx_int_t initialize(ngx_cycle_t* cycle) {
         fprintf(stderr, "init: 'wilton_free' dlsym failed\n");
         return NGX_ERROR;
     }
+    wilton_dyload_fun wilton_dyload = (wilton_dyload_fun) dlsym(core_lib, "wilton_dyload");
+    if (NULL == wilton_dyload) {
+        fprintf(stderr, "init: 'wilton_dyload' dlsym failed\n");
+        return NGX_ERROR;
+    }
     wilton_embed_init_fun embed_init = (wilton_embed_init_fun) dlsym(embed_lib, "wilton_embed_init");
     if (NULL == embed_init) {
         fprintf(stderr, "init: 'wilton_embed_init' dlsym failed\n");
@@ -100,30 +103,41 @@ ngx_int_t initialize(ngx_cycle_t* cycle) {
 
     // call init
     char* err_init = embed_init(whome, (int)(strlen(whome)),
-            engine, (int)(strlen(engine)), app_dir, (int)(strlen(app_dir)));
+            engine, (int)(strlen(engine)), appdir, (int)(strlen(appdir)));
     if (NULL != err_init) {
         fprintf(stderr, "init: 'wilton_embed_init' failed, message: [%s]\n", err_init);
         wilton_free(err_init);
         return NGX_ERROR;
     }
 
+    // todo: better libs loading
+    // dyload required libs
+    snprintf(str, sizeof(str), "%s%s", whome, "/bin/");
+    wilton_dyload("wilton_mustache", (int) sizeof("wilton_mustache") - 1, str, (int) strlen(str));
+    wilton_dyload("wilton_channel", (int) sizeof("wilton_channel") - 1, str, (int) strlen(str));
+    wilton_dyload("wilton_thread", (int) sizeof("wilton_thread") - 1, str, (int) strlen(str));
+    wilton_dyload("wilton_http", (int) sizeof("wilton_http") - 1, str, (int) strlen(str));
+
     fprintf(stderr, "gateway: initialization complete \n");
 
-#ifndef _WIN32
-    return create_pipe(cycle);
-#else // _WIN32
     return NGX_OK;
-#endif // !_WIN32
 }
 
 static ngx_command_t ngx_http_wilton_commands[] = {
 
     { ngx_string("wilton"), /* directive */
-      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS, /* location context and takes
+      NGX_HTTP_LOC_CONF | NGX_CONF_NOARGS, /* location context and takes
                                             no arguments*/
-      ngx_http_wilton, /* configuration setup function */
-      0, /* No offset. Only one context is supported. */
+      conf_wilton, /* configuration setup function */
+      NGX_HTTP_LOC_CONF_OFFSET, /* No offset. Only one context is supported. */
       0, /* No offset when storing the module configuration on struct. */
+      NULL},
+
+    { ngx_string("wilton_home"),
+      NGX_HTTP_LOC_CONF | NGX_CONF_TAKE1,
+      conf_wilton_home,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
       NULL},
 
     ngx_null_command /* command termination */
@@ -161,7 +175,10 @@ ngx_module_t ngx_http_wilton_module = {
 static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r)
 {
     const char* call_runscript = "runscript_quickjs";
-    const char* call_desc_json = "{\"module\": \"wngx/hi\"}";
+    char call_desc_json[1024];
+    memset(call_desc_json, ' ', sizeof(call_desc_json));
+    snprintf(call_desc_json, sizeof(call_desc_json),
+            "{\"module\": \"%s\", \"args\": [%lld]}", gateway_module, (long long) r);
 
     char* json_out = NULL;
     int json_len_out = -1;
@@ -176,43 +193,29 @@ static ngx_int_t ngx_http_wilton_handler(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    /* Set the Content-Type header. */
-    r->headers_out.content_type.len = sizeof("text/plain") - 1;
-    r->headers_out.content_type.data = (u_char *) "text/plain";
+    if (NULL != json_out) {
+        wilton_free(json_out);
+    }
 
-    /* Allocate a new buffer for sending out the reply. */
-    ngx_buf_t* b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+    r->main->count++;
+    return NGX_DONE;
 
-    /* Insertion in the buffer chain. */
-    ngx_chain_t out;
-    out.buf = b;
-    out.next = NULL; /* just one buffer */
+}
 
-    size_t len = json_len_out < 1024 ? json_len_out : 1024;
-    memcpy(resp, json_out, len);
-    wilton_free(json_out);
-
-    b->pos = resp; /* first position in memory of the data */
-    b->last = resp + len; /* last position in memory of the data */
-    b->memory = 1; /* content is in read-only memory */
-    b->last_buf = 1; /* there will be no more buffers in the request */
-
-    /* Sending the headers for the reply. */
-    r->headers_out.status = NGX_HTTP_OK; /* 200 status code */
-    /* Get the content length of the body. */
-    r->headers_out.content_length_n = len   ;
-    ngx_http_send_header(r); /* Send the headers */
-
-    /* Send the body, and return the status code of the output filter chain. */
-    return ngx_http_output_filter(r, &out);
-} /* ngx_http_wilton_handler */
-
-static char *ngx_http_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+static char *conf_wilton(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_core_loc_conf_t *clcf; /* pointer to core location configuration */
 
-    /* Install the hello world handler. */
+    /* Install the handler. */
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_wilton_handler;
 
     return NGX_CONF_OK;
-} /* ngx_http_wilton */
+}
+
+static char *conf_wilton_home(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_core_loc_conf_t *clcf; /* pointer to core location configuration */
+    
+    //fprintf(stderr, "%s\n", cf->args->elts);
+    
+    return NGX_CONF_OK;
+}
