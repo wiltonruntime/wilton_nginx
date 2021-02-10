@@ -220,7 +220,7 @@ bool json_or_unspecified(const sl::json::value& meta) {
 sl::json::value data_to_json(const char* data, int data_len) {
     try {
         return sl::json::load({data, data_len});
-    } catch(const std::exception& e) {
+    } catch(const std::exception&) {
         return sl::json::value();
     }
 }
@@ -240,46 +240,46 @@ sl::json::value create_req(void* request, const char* metadata, int metadata_len
             } 
             if (sl::json::type::object == payload.json_type() ||
                     sl::json::type::array == payload.json_type()) {
-                dt = sl::json::value({
+                dt = {
                     { "format", "json" },
                     { "json", std::move(payload) },
                     { "string", nullptr },
                     { "binary", nullptr }
-                });
+                };
             } else {
                 auto data_st = std::string(data, ulen);
-                dt = sl::json::value({
+                dt = {
                     { "format", "string" },
                     { "json", nullptr },
                     { "string", std::move(data_st) },
                     { "binary", nullptr }
-                });
+                };
             }
         } else {
             auto src = sl::io::array_source(data, ulen);
             auto dest = sl::io::string_sink();
             auto sink = sl::io::make_hex_sink(dest);
             sl::io::copy_all(src, sink);
-            dt = sl::json::value({
+            dt = {
                 { "format", "binary" },
                 { "json", nullptr },
                 { "string", nullptr },
                 { "binary", std::move(dest.get_string()) }
-            });
+            };
         }
     } else {
-        dt = sl::json::value({
+        dt = {
             { "format", "string" },
             { "json", nullptr },
             { "string", "" },
             { "binary", nullptr }
-        });
+        };
     }
-    return sl::json::value({
+    return {
         { "handle", handle },
         { "meta", std::move(meta) },
         { "data", std::move(dt) },
-    });
+    };
 }
 
 } // namespace
