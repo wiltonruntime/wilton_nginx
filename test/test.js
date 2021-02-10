@@ -42,14 +42,36 @@ for(;;) {
     if (null === req) {
         break;
     }
-    logger.info(JSON.stringify(req, null, 4));
-    wiltoncall("nginx_send_response", {
-        handle: req.handle,
-        status: 200,
-        headers: {
-            "X-Foo-Bar": "Baz"
-        },
-        data: req
-    });
+    //logger.info(JSON.stringify(req, null, 4));
+    let resp = null;
+    if ("file" === req.data.format) {
+        logger.info("Receiving file");
+        logger.info(`path: [${req.data.file}]`);
+        //const data = fs.readFile(req.data.file);
+        //logger.info(`size: [${data.length}]`);
+        fs.writeFile("/var/log/nginx/bch.tmp", JSON.stringify(req, null, 4));
+        resp = {
+            handle: req.handle,
+            status: 200,
+            headers: {
+                "X-Foo-Bar": "Boo",
+                "X-Background-Content-Handler-Data-File": "/var/log/nginx/bch.tmp"
+            }
+        };
+    } else {
+        resp = {
+            handle: req.handle,
+            status: 200,
+            headers: {
+                "X-Foo-Bar": "Baz"
+            },
+            data: req
+        };
+    } 
+    try {
+        wiltoncall("nginx_send_response", resp);
+    } catch(e) {
+        logger.error(e);
+    }
 }
 logger.info("App shut down");

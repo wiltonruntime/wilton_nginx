@@ -123,8 +123,6 @@ wilton_Channel* create_requests_channel(const sl::json::value& conf) {
     return reinterpret_cast<wilton_Channel*>(ha);
 }
 
-// todo: binary
-// todo: file
 support::buffer invoke_response_callback(sl::io::span<const char> data) {
     // json parse
     auto json = sl::json::load(data);
@@ -244,7 +242,8 @@ sl::json::value create_req(void* request, const char* metadata, int metadata_len
                     { "format", "json" },
                     { "json", std::move(payload) },
                     { "string", nullptr },
-                    { "binary", nullptr }
+                    { "binary", nullptr },
+                    { "file", nullptr }
                 };
             } else {
                 auto data_st = std::string(data, ulen);
@@ -252,7 +251,8 @@ sl::json::value create_req(void* request, const char* metadata, int metadata_len
                     { "format", "string" },
                     { "json", nullptr },
                     { "string", std::move(data_st) },
-                    { "binary", nullptr }
+                    { "binary", nullptr },
+                    { "file", nullptr }
                 };
             }
         } else {
@@ -264,17 +264,32 @@ sl::json::value create_req(void* request, const char* metadata, int metadata_len
                 { "format", "binary" },
                 { "json", nullptr },
                 { "string", nullptr },
-                { "binary", std::move(dest.get_string()) }
+                { "binary", std::move(dest.get_string()) },
+                { "file", nullptr }
             };
         }
     } else {
-        dt = {
-            { "format", "string" },
-            { "json", nullptr },
-            { "string", "" },
-            { "binary", nullptr }
-        };
+        auto& dtf_json = meta["dataTempFile"];
+        if (sl::json::type::nullt == dtf_json.json_type()) {
+            dt = {
+                { "format", "string" },
+                { "json", nullptr },
+                { "string", "" },
+                { "binary", nullptr },
+                { "file", nullptr }
+            };
+        } else {
+            auto path = dtf_json.as_string_nonempty_or_throw("dataTempFile");
+            dt = {
+                { "format", "file" },
+                { "json", nullptr },
+                { "string", nullptr },
+                { "binary", nullptr },
+                { "file", std::move(path) }
+            };
+        }
     }
+
     return {
         { "handle", handle },
         { "meta", std::move(meta) },
