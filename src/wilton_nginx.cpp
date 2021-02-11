@@ -25,11 +25,13 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "utf8.h"
 
+#include "staticlib/support.hpp"
 #include "staticlib/io.hpp"
 #include "staticlib/json.hpp"
 #include "staticlib/mustache.hpp"
@@ -61,6 +63,8 @@ const std::string logger = std::string("wilton.nginx");
 
 bch_send_response_type send_response_fun = nullptr;
 
+std::unique_ptr<std::mutex> response_mutex;
+
 wilton_Channel* requests_channel = nullptr;
 
 } // namespace
@@ -72,9 +76,10 @@ sl::json::value read_config(const std::string& conf_path) {
     auto conf_path_full = sl::tinydir::normalize_path(sl::tinydir::full_path(conf_path));
     auto conf_dir = sl::utils::strip_filename(conf_path_full);
     auto appdir = sl::utils::strip_filename(sl::tinydir::normalize_path(conf_dir));
-    auto src = sl::mustache::source(conf_path, {
+    sl::json::value values = {
         { "appdir", appdir }
-    });
+    };
+    auto src = sl::mustache::source(conf_path, values);
     return sl::json::load(src);
 }
 
@@ -164,6 +169,8 @@ support::buffer invoke_response_callback(sl::io::span<const char> data) {
     if (0 == status) throw support::exception(TRACEMSG(
             "Required parameter 'status' not specified"));
     const std::string& dt = jdata.length() > 0 ? jdata : rdata.get();
+    // take mutex
+    std::lock_guard<std::mutex> guard{*response_mutex};
     // call nginx
     auto err = send_response_fun(reinterpret_cast<void*>(handle), status,
             headers.c_str(), static_cast<int> (headers.length()),
@@ -331,6 +338,9 @@ extern "C" int bch_initialize(bch_send_response_type response_callback,
             nullptr == hanler_config ||
             !sl::support::is_uint16_positive(hanler_config_len)) return -1;
     try {
+        if (nullptr != response_mutex.get()) throw wilton::support::exception(TRACEMSG(
+                "Invalid double initialization"));
+        response_mutex = sl::support::make_unique<std::mutex>();
         send_response_fun = response_callback;
         auto conf_path = std::string(hanler_config, static_cast<uint16_t>(hanler_config_len));
         auto conf = wilton::nginx::read_config(conf_path);
@@ -353,6 +363,7 @@ extern "C" int bch_initialize(bch_send_response_type response_callback,
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Application initialization error, message: [" << e.what() << "]" << std::endl;
+        response_mutex.reset(nullptr);
         send_response_fun = nullptr;
         requests_channel = nullptr;
         return 1;

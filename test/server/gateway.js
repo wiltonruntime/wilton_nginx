@@ -20,8 +20,9 @@ define([
     "wilton/Channel",
     "wilton/fs",
     "wilton/Logger",
+    "wilton/misc",
     "wilton/wiltoncall"
-], function(module, Random, Channel, fs, Logger, wiltoncall) {
+], function(module, Random, Channel, fs, Logger, misc, wiltoncall) {
     "use strict";
     var logger = new Logger(module.id);
 
@@ -47,14 +48,16 @@ define([
 
     return function(conf) {
         Logger.initialize(conf.logging);
+        
+        //logger.info(JSON.stringify(misc.wiltonConfig(), null, 4));
 
         for(;;) {
             var req = queue.receive();
             if (null === req) {
                 break;
             }
-            logger.info("Request received, path: [" + req.meta.uri + "]," +
-                    " args: [" + req.meta.args + "], data: [" + JSON.stringify(req, null, 4) + "]");
+            //logger.info("Request received, path: [" + req.meta.uri + "]," +
+            //        " args: [" + req.meta.args + "], data: [" + JSON.stringify(req, null, 4) + "]");
 
             var data = null;
             var status = 200;
@@ -73,15 +76,19 @@ define([
                 data = e.message;
                 status = 500;
             }
-            logger.info("Sending response, headers: [" + JSON.stringify(headers, null, 4) + "]," +
-                    " data: [" + data + "]");
+            //logger.info("Sending response, headers: [" + JSON.stringify(headers, null, 4) + "]," +
+            //        " data: [" + data + "]");
 
-            wiltoncall("nginx_send_response", {
-                handle: req.handle,
-                status: status,
-                headers: headers,
-                data: data
-            });
+            try {
+                wiltoncall("nginx_send_response", {
+                    handle: req.handle,
+                    status: status,
+                    headers: headers,
+                    data: data
+                });
+            } catch(e) {
+                logger.error(e);
+            }
         }
         logger.info("App shut down");
     };
