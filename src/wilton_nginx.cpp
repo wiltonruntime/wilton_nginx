@@ -32,6 +32,7 @@
 
 #include "staticlib/io.hpp"
 #include "staticlib/json.hpp"
+#include "staticlib/mustache.hpp"
 #include "staticlib/ranges.hpp"
 #include "staticlib/support.hpp"
 #include "staticlib/utils.hpp"
@@ -45,6 +46,7 @@
 #include "wilton/support/buffer.hpp"
 #include "wilton/support/exception.hpp"
 #include "wilton/support/logging.hpp"
+#include "wilton/support/misc.hpp"
 #include "wilton/support/registrar.hpp"
 
 typedef int (*bch_send_response_type)(
@@ -67,14 +69,19 @@ namespace wilton {
 namespace nginx {
 
 sl::json::value read_config(const std::string& conf_path) {
-    auto src = sl::tinydir::file_source(conf_path);
+    auto conf_path_full = sl::tinydir::normalize_path(sl::tinydir::full_path(conf_path));
+    auto conf_dir = sl::utils::strip_filename(conf_path_full);
+    auto appdir = sl::utils::strip_filename(sl::tinydir::normalize_path(conf_dir));
+    auto src = sl::mustache::source(conf_path, {
+        { "appdir", appdir }
+    });
     return sl::json::load(src);
 }
 
 void call_init(const sl::json::value& conf) {
+    auto appdir = conf["appdir"].as_string_nonempty_or_throw("appdir");
     auto whome = conf["nginx"]["wiltonHome"].as_string_nonempty_or_throw("nginx.wiltonHome");
     auto engine = conf["nginx"]["engine"].as_string_nonempty_or_throw("nginx.engine");
-    auto appdir = conf["nginx"]["appdir"].as_string_nonempty_or_throw("nginx.appdir");
     auto err = wilton_embed_init(whome.data(), static_cast<int>(whome.length()),
             engine.data(), static_cast<int>(engine.length()),
             appdir.data(), static_cast<int>(appdir.length()));
@@ -138,12 +145,14 @@ support::buffer invoke_response_callback(sl::io::span<const char> data) {
         } else if ("status" == name) {
             status = fi.as_uint16_or_throw(name);
         } else if ("headers" == name) {
-            headers = fi.val().dumps();
+            if (sl::json::type::nullt != fi.val().json_type()) {
+                headers = fi.val().dumps();
+            }
         } else if ("data" == name) {
             if (sl::json::type::object == fi.val().json_type() ||
                     sl::json::type::array == fi.val().json_type()) {
                 jdata = fi.val().dumps();
-            } else {
+            } else if (sl::json::type::nullt != fi.val().json_type()) {
                 rdata = fi.as_string_nonempty_or_throw(name);
             }
         } else {
@@ -171,7 +180,23 @@ void register_response_callback() {
 void run_app(const sl::json::value& conf) {
     auto engine = conf["nginx"]["engine"].as_string_nonempty_or_throw("nginx.engine");
     auto name = "runscript_" + engine;
-    auto call = conf["nginx"]["startup"].dumps();
+    auto main = conf["nginx"]["main"].as_string_nonempty_or_throw("nginx.main");
+    auto call_json = sl::json::value();
+    if (sl::utils::starts_with(main, support::file_proto_prefix) ||
+            sl::utils::starts_with(main, support::zip_proto_prefix)) {
+        call_json = {
+            { "esmodule", std::move(main) }
+        };
+    } else {
+        auto args = std::vector<sl::json::value>();
+        args.emplace_back(conf.clone());
+        call_json = {
+            { "module", std::move(main) },
+            { "args", std::move(args) }
+        };
+    }
+
+    auto call = call_json.dumps();
     char* out = nullptr;
     int out_len = -1;
     auto err = wiltoncall(name.c_str(), static_cast<int>(name.length()),
@@ -272,9 +297,9 @@ sl::json::value create_req(void* request, const char* metadata, int metadata_len
         auto& dtf_json = meta["dataTempFile"];
         if (sl::json::type::nullt == dtf_json.json_type()) {
             dt = {
-                { "format", "string" },
+                { "format", "none" },
                 { "json", nullptr },
-                { "string", "" },
+                { "string", nullptr },
                 { "binary", nullptr },
                 { "file", nullptr }
             };

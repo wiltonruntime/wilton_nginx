@@ -1,0 +1,34 @@
+{
+    "appname": "ngxtest",
+    "appversion": "1.0",
+    "appdir": "{{{appdir}}}",
+
+    "nginx": {
+        "wiltonHome": "{{{appdir}}}../../../../build/wilton_dist/",
+        "engine": "quickjs",
+        "modules": [
+            "wilton_channel",
+            "wilton_crypto",
+            "wilton_fs"
+        ],
+        "main": "ngxtest/gateway",
+        "main_DISABLED": "file://{{{appdir}}}esgateway.js",
+        "requestsQueueSize": 1024,
+        "responseBodyTempDir": "/var/log/nginx/"
+    },
+
+    "logging": {
+        "appenders": [
+            {
+                "appenderType": "FILE",
+                "thresholdLevel": "DEBUG",
+                "filePath": "/var/log/nginx/bch_app.log"
+            }
+        ],
+        "loggers": {
+            "staticlib": "WARN",
+            "wilton": "WARN",
+            "wilton.nginx": "DEBUG"
+        }
+    }
+}
