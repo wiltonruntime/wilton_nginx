@@ -24,11 +24,11 @@ define([
         Logger.initConsole("INFO");
         var start = Date.now();
         var channels = [];
-        for (var i = 0; i < 12; i++) {
+        for (var i = 0; i < 4; i++) {
             var ch = thread.run({
                 callbackScript: {
                     module: "client/loadWorker",
-                    args: [1024*100, "file_"]
+                    args: [16, "file"]
                 },
                 shutdownChannelName: "worker/" + i
             });
@@ -38,6 +38,6 @@ define([
             ch.receiveAndClose();
         });
         var end = Date.now();
-        print("Finish success, time: [" + ((end - start)/1000) + "]")
+        print("Finish success, time: [" + ((end - start)/1000) + "]");
     };
 });

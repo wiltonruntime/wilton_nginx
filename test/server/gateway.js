@@ -56,8 +56,8 @@ define([
             if (null === req) {
                 break;
             }
-            //logger.info("Request received, path: [" + req.meta.uri + "]," +
-            //        " args: [" + req.meta.args + "], data: [" + JSON.stringify(req, null, 4) + "]");
+            logger.info("Request received, path: [" + req.meta.uri + "]," +
+                    " args: [" + req.meta.args + "]");
 
             var data = null;
             var status = 200;
@@ -79,15 +79,14 @@ define([
             //logger.info("Sending response, headers: [" + JSON.stringify(headers, null, 4) + "]," +
             //        " data: [" + data + "]");
 
-            try {
-                wiltoncall("nginx_send_response", {
-                    handle: req.handle,
-                    status: status,
-                    headers: headers,
-                    data: data
-                });
-            } catch(e) {
-                logger.error(e);
+            var err = wiltoncall("nginx_send_response", {
+                handle: req.handle,
+                status: status,
+                headers: headers,
+                data: data
+            });
+            if (0 !== parseInt(err, 10)) {
+                logger.warn("Sending response error, code: [" + err + "]");
             }
         }
         logger.info("App shut down");

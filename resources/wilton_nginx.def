@@ -15,3 +15,4 @@
 EXPORTS
     bch_initialize
     bch_receive_request
+    bch_free_reposne_data

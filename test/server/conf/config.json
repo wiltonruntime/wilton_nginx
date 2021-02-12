@@ -14,7 +14,7 @@
         "main": "ngxtest/gateway",
         "main_DISABLED": "file://{{{appdir}}}esgateway.js",
         "requestsQueueSize": 1024,
-        "responseBodyTempDir": "C:/tmp/nginx/data/"
+        "responseBodyTempDir": "/home/alex/projects/nginx/tmp/"
     },
 
     "logging": {
@@ -22,7 +22,7 @@
             {
                 "appenderType": "FILE",
                 "thresholdLevel": "DEBUG",
-                "filePath": "C:/tmp/nginx/bch_app.log"
+                "filePath": "/home/alex/projects/nginx/tmp/bch_app.log"
             }
         ],
         "loggers": {

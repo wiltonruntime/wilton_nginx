@@ -55,7 +55,7 @@ typedef int (*bch_send_response_type)(
         void* request,
         int http_status,
         const char* headers, int headers_len,
-        const char* data, int data_len);
+        char* data, int data_len);
 
 namespace { // anonymous
 
@@ -141,7 +141,7 @@ support::buffer invoke_response_callback(sl::io::span<const char> data) {
     int64_t handle = -1;
     uint16_t status = 0;
     auto headers = std::string("{}");
-    auto jdata = std::string();
+    auto rjdata = std::ref(sl::json::null_value_ref());
     auto rdata = std::ref(sl::utils::empty_string());
     for (const sl::json::field& fi : json.as_object()) {
         auto& name = fi.name();
@@ -156,7 +156,7 @@ support::buffer invoke_response_callback(sl::io::span<const char> data) {
         } else if ("data" == name) {
             if (sl::json::type::object == fi.val().json_type() ||
                     sl::json::type::array == fi.val().json_type()) {
-                jdata = fi.val().dumps();
+                rjdata = fi.val();
             } else if (sl::json::type::nullt != fi.val().json_type()) {
                 rdata = fi.as_string_nonempty_or_throw(name);
             }
@@ -168,16 +168,20 @@ support::buffer invoke_response_callback(sl::io::span<const char> data) {
             "Required parameter 'handle' not specified"));
     if (0 == status) throw support::exception(TRACEMSG(
             "Required parameter 'status' not specified"));
-    const std::string& dt = jdata.length() > 0 ? jdata : rdata.get();
+    // prepare data
+    auto buf = support::make_null_buffer();
+    if (sl::json::type::nullt != rjdata.get().json_type()) {
+        buf = support::make_json_buffer(rjdata.get());
+    } else if (rdata.get().length() > 0) {
+        buf = support::make_string_buffer(rdata.get());
+    }
     // take mutex
     std::lock_guard<std::mutex> guard{*response_mutex};
     // call nginx
     auto err = send_response_fun(reinterpret_cast<void*>(handle), status,
             headers.c_str(), static_cast<int> (headers.length()),
-            dt.c_str(), static_cast<int> (dt.length()));
-    if (200 != err) throw support::exception(TRACEMSG(
-            "Error sending response, status: [" + sl::support::to_string(err) + "]"));
-    return support::make_null_buffer();
+            buf.data(), buf.size_int());
+    return support::make_string_buffer(sl::support::to_string(err));
 }
 
 void register_response_callback() {
@@ -394,5 +398,11 @@ extern "C" int bch_receive_request(void* request, const char* metadata, int meta
         wilton::support::log_error(logger, std::string() + 
                 "Error thrown while enqueuing request, message: [" + e.what() + "]");
         return -1;
+    }
+}
+
+extern "C" void bch_free_response_data(void* data) {
+    if (nullptr != data) {
+        wilton_free(reinterpret_cast<char*>(data));
     }
 }
