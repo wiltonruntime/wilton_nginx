@@ -50,6 +50,7 @@ target_link_libraries ( ${PROJECT_NAME} PRIVATE
         wilton_logging
         wilton_embed
         wilton_channel
+        wilton_thread
         ${${PROJECT_NAME}_DEPS_PC_LIBRARIES} )
 
 target_include_directories ( ${PROJECT_NAME} BEFORE PRIVATE 
@@ -58,6 +59,7 @@ target_include_directories ( ${PROJECT_NAME} BEFORE PRIVATE
         ${WILTON_DIR}/modules/wilton_logging/include
         ${WILTON_DIR}/modules/wilton_embed/include
         ${WILTON_DIR}/modules/wilton_channel/include
+        ${WILTON_DIR}/modules/wilton_thread/include
         ${${PROJECT_NAME}_DEPS_PC_INCLUDE_DIRS} )
         
 target_compile_options ( ${PROJECT_NAME} PRIVATE ${${PROJECT_NAME}_DEPS_PC_CFLAGS_OTHER} )

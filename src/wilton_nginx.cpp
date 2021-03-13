@@ -44,6 +44,7 @@
 #include "wilton/wiltoncall.h"
 #include "wilton/wilton_channel.h"
 #include "wilton/wilton_embed.h"
+#include "wilton/wilton_thread.h"
 
 #include "wilton/support/buffer.hpp"
 #include "wilton/support/exception.hpp"
@@ -66,6 +67,7 @@ bch_send_response_type send_response_fun = nullptr;
 std::unique_ptr<std::mutex> response_mutex;
 
 wilton_Channel* requests_channel = nullptr;
+wilton_Channel* thread_shutdown_channel = nullptr;
 
 } // namespace
 
@@ -114,13 +116,31 @@ void dyload_modules(const sl::json::value& conf) {
 }
 
 wilton_Channel* create_requests_channel(const sl::json::value& conf) {
-
     // need to use JS API because channel is going to be accessed from JS
     uint16_t size = conf["nginx"]["requestsQueueSize"].as_uint16_or_throw("nginx.requestsQueueSize");
     auto name = std::string("channel_create");
     auto desc = sl::json::dumps({
         { "name", "wilton/nginx/requests" },
         { "size", size }
+    });
+    char* out;
+    int out_len;
+    auto err_call = wiltoncall(name.c_str(), static_cast<int>(name.length()),
+            desc.c_str(), static_cast<int>(desc.length()),
+            std::addressof(out), std::addressof(out_len));
+    if (nullptr != err_call) {
+        wilton::support::throw_wilton_error(err_call, TRACEMSG(err_call));
+    }
+    auto out_json = sl::json::load(sl::io::make_span(out, out_len));
+    auto ha = out_json["channelHandle"].as_int64_or_throw("channelHandle");
+    return reinterpret_cast<wilton_Channel*>(ha);
+}
+
+wilton_Channel* create_thread_shutdown_channel() {
+    auto name = std::string("channel_create");
+    auto desc = sl::json::dumps({
+        { "name", "wilton/nginx/thread" },
+        { "size", 1 }
     });
     char* out;
     int out_len;
@@ -186,6 +206,15 @@ support::buffer invoke_response_callback(sl::io::span<const char> data) {
 
 void register_response_callback() {
     wilton::support::register_wiltoncall("nginx_send_response", invoke_response_callback);
+}
+
+std::string get_capabilities(const sl::json::value& conf) {
+    auto& caps = conf["nginx"]["capabilities"];
+    if (sl::json::type::array == caps.json_type()) {
+        return caps.dumps();
+    } else {
+        return std::string();
+    }
 }
 
 void run_app(const sl::json::value& conf) {
@@ -259,7 +288,6 @@ sl::json::value data_to_json(const char* data, int data_len) {
     }
 }
 
-// todo: file
 sl::json::value create_req(void* request, const char* metadata, int metadata_len,
         const char* data, int data_len) {
     auto handle = reinterpret_cast<int64_t>(request);
@@ -342,6 +370,7 @@ extern "C" int bch_initialize(bch_send_response_type response_callback,
             nullptr == hanler_config ||
             !sl::support::is_uint16_positive(hanler_config_len)) return -1;
     try {
+        // initialize env
         if (nullptr != response_mutex.get()) throw wilton::support::exception(TRACEMSG(
                 "Invalid double initialization"));
         response_mutex = sl::support::make_unique<std::mutex>();
@@ -351,19 +380,33 @@ extern "C" int bch_initialize(bch_send_response_type response_callback,
         wilton::nginx::call_init(conf);
         wilton::nginx::dyload_modules(conf);
         requests_channel = wilton::nginx::create_requests_channel(conf);
+        thread_shutdown_channel = wilton::nginx::create_thread_shutdown_channel();
         wilton::nginx::register_response_callback();
 
+        // spawn worker thread
+        auto caps = wilton::nginx::get_capabilities(conf);
+        auto schan_offer = sl::json::dumps({
+            { "channelHandle", reinterpret_cast<int64_t>(thread_shutdown_channel) },
+            { "message", "{}" }
+        });
         auto conf_ptr = new sl::json::value();
         *conf_ptr = std::move(conf);
-        auto th = std::thread([conf_ptr]() {
-            try {
-                wilton::nginx::run_app(*conf_ptr);
-            } catch(const std::exception& e) {
-                std::cerr << "Application error, message: [" << e.what() << "]" << std::endl;
-            }
-            delete conf_ptr;
-        });
-        th.detach();
+        char* err = wilton_thread_run(conf_ptr,
+                [](void* passed) {
+                    auto* conf_ptr = static_cast<sl::json::value*>(passed);
+                    try {
+                        wilton::nginx::run_app(*conf_ptr);
+                    } catch(const std::exception& e) {
+                        std::cerr << "Application error, message: [" << e.what() << "]" << std::endl;
+                    }
+                    delete conf_ptr;
+                },
+                schan_offer.c_str(), static_cast<int>(schan_offer.length()),
+                caps.empty() ? nullptr : caps.c_str(), static_cast<int>(caps.length()));
+        if (nullptr != err) {
+            wilton::support::throw_wilton_error(err, TRACEMSG(err));
+        }
+
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Application initialization error, message: [" << e.what() << "]" << std::endl;
@@ -404,5 +447,23 @@ extern "C" int bch_receive_request(void* request, const char* metadata, int meta
 extern "C" void bch_free_response_data(void* data) {
     if (nullptr != data) {
         wilton_free(reinterpret_cast<char*>(data));
+    }
+}
+
+extern "C" void bch_shutdown() /* noexcept */ {
+    try {
+        wilton_Channel_close(requests_channel);
+        char* out = nullptr;
+        int out_len = -1;
+        int success_shutdown = 0;
+        wilton_Channel_receive(thread_shutdown_channel, 0,
+                std::addressof(out), std::addressof(out_len),
+                std::addressof(success_shutdown));
+        if (nullptr != out) {
+            wilton_free(out);
+        }
+        wilton_Channel_close(thread_shutdown_channel);
+    } catch(...) {
+        // ignore
     }
 }

@@ -16,3 +16,4 @@ EXPORTS
     bch_initialize
     bch_receive_request
     bch_free_response_data
+    bch_shutdown

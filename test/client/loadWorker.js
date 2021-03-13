@@ -80,14 +80,14 @@ define([
     return function(count, opts) {
         for (var i = 0; i < count; i++) {
             try {
-                if (0 == i % 50) {
+                if (0 === i % 50) {
                     print(i);
                 }
-                doWork(opts)
+                doWork(opts);
             } catch(e) {
                 print(utils.formatError(e));
             }
         }
         print("worker exit, count: [" + i + "]");
-    }
+    };
 });

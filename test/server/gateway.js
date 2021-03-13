@@ -50,6 +50,7 @@ define([
         Logger.initialize(conf.logging);
         
         //logger.info(JSON.stringify(misc.wiltonConfig(), null, 4));
+        logger.info("Wilton Nginx app init called");
 
         for(;;) {
             var req = queue.receive();
