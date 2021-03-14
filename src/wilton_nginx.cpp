@@ -137,6 +137,7 @@ wilton_Channel* create_requests_channel(const sl::json::value& conf) {
 }
 
 wilton_Channel* create_thread_shutdown_channel() {
+    // need to use JS API because thread uses JS API to notify about shutdown
     auto name = std::string("channel_create");
     auto desc = sl::json::dumps({
         { "name", "wilton/nginx/thread" },
