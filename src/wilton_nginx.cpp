@@ -295,7 +295,7 @@ sl::json::value create_req(void* request, const char* metadata, int metadata_len
     auto meta = sl::json::load({metadata, metadata_len});
     auto dt = sl::json::value();
     if (nullptr != data) {
-        auto ulen = static_cast<uint16_t>(data_len);
+        auto ulen = static_cast<uint32_t>(data_len);
         if (utf8::is_valid(data, data + ulen)) {
             auto payload = sl::json::value();
             if (json_or_unspecified(meta)) {
